@@ -41,7 +41,7 @@ class ClockProbeSample:
 class ClockOffsetDistribution:
     client_id: str
     sample_count: int
-    mean_offset_seconds: float
+    average_offset_seconds: float
     stddev_offset_seconds: float
     min_offset_seconds: float
     max_offset_seconds: float
@@ -69,7 +69,7 @@ class ClockOffsetEstimator:
         return ClockOffsetDistribution(
             client_id=client_id,
             sample_count=len(samples),
-            mean_offset_seconds=mean(offsets),
+            average_offset_seconds=mean(offsets),
             stddev_offset_seconds=stddev_offset,
             min_offset_seconds=min(offsets),
             max_offset_seconds=max(offsets),
