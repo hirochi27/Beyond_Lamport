@@ -1,0 +1,65 @@
+probe_client.py main()
+全体の実行開始。引数を読み、warmup と本計測を順番に呼ぶ。
+
+probe_client.py parse_args()
+--sequencer, --client-id, --samples, --warmup, --interval を読む。
+
+probe_client.py normalize_base_url()
+sequencer URL の末尾の / を削る。
+
+probe_client.py run_warmup()
+最初の数回、分布に入れない probe を実行する。
+
+probe_client.py collect_warmup_probe()
+/api/clock-probe に GET して、初回通信のノイズを逃がす。
+
+probe_client.py get_json()
+sequencer に HTTP GET を送る。
+
+main.py clock_probe()
+sequencer 側で t2, t3 に相当する時刻を返す。
+
+probe_client.py collect_samples()
+指定回数ぶん、本番の probe を繰り返す。
+
+probe_client.py collect_probe()
+client 側で t1, t4 を取り、sequencer の t2, t3 とまとめる。
+
+probe_client.py get_json()
+/api/clock-probe に GET して、sequencer の時刻を受け取る。
+
+main.py clock_probe()
+sequencer 側で sequencer_receive_time_ns と sequencer_send_time_ns を返す。
+
+probe_client.py post_json()
+t1,t2,t3,t4 を /api/clock-offset-samples に POST する。
+
+main.py class ClockProbeSampleRequest
+POST された JSON を受け取るための型。
+
+main.py add_clock_offset_sample()
+probe sample を受け取り、分布を更新して response を返す。
+
+main.py build_probe_sample()
+ClockProbeSampleRequest を ClockProbeSample に変換する。
+
+beyond_lamport.py class ClockProbeSample
+probe 1回分の t1,t2,t3,t4 を保持し、offset と RTT を計算できる形。
+
+beyond_lamport.py ClockOffsetEstimator.add_sample()
+sample を client_id ごとのリストに保存し、最新分布を計算する。
+
+beyond_lamport.py ClockOffsetEstimator.distribution_for()
+RTT外れ値を除外し、average/stddev/uncertainty などを計算する。
+
+beyond_lamport.py class ClockOffsetDistribution
+計算された clock offset distribution の結果を入れるデータ型。
+
+main.py build_probe_response()
+今回の sample 結果と最新 distribution を JSON response にまとめる。
+
+probe_client.py print_probe_response()
+offset, RTT, average, stddev, median_rtt, rejected を表示する。
+
+probe_client.py print_final_distribution()
+最後に最新 distribution を JSON 形式で表示する。
