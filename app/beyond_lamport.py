@@ -52,6 +52,14 @@ class ClockOffsetDistribution:
     uncertainty_seconds: float
 
 
+#クライアント時計のtimestampを、シーケンサ時計基準の推定時刻（現実世界でリクエストが発生した時刻）に変換する
+def estimate_client_real_time_ns(client_timestamp_ns: int, average_offset_seconds: float,) -> int:
+    client_real_time = client_timestamp_ns + int(average_offset_seconds * 1_000_000_000)
+    print(client_real_time)
+    return client_real_time
+
+
+
 # Codex クライアント2つの時計オフセット差分布 Δθ = θ_j - θ_i を入れるデータ型
 @dataclass(frozen=True)
 class ClockOffsetDeltaDistribution:
@@ -239,6 +247,30 @@ class OrderingDecision:
     confident: bool
 
 
+#先行確率を保存するためのデータ型
+@dataclass(frozen=True)
+class PairwisePrecedenceProbability:
+    first_message_id: str
+    second_message_id: str
+    probability_first_before_second: float
+
+
+#グラフのエッジ（メッセージ間の有向エッジ: P = confidence）
+@dataclass(frozen=True)
+class PrecedenceEdge:
+    from_message_id: str
+    to_message_id: str
+    confidence: float
+
+
+#トポロジカルソートの結果をいれる箱
+@dataclass(frozen=True)
+class TopologicalOrdering:
+    ordered_message_ids: list[str]
+    kept_edges: list[PrecedenceEdge]
+    removed_edges: list[PrecedenceEdge]
+
+
 #2つのメッセージの前後関係を確立で判定するクラス
 class OrderingProbabilityModel:
     def __init__(self, confidence_threshold: float = 0.95):
@@ -271,6 +303,160 @@ class OrderingProbabilityModel:
 
     def _normal_cdf(self, value: float) -> float:
         return 0.5 * (1.0 + erf(value / sqrt(2.0)))
+
+
+#各メッセージペアの先行確率Pを計算する
+def build_pairwise_precedence_probabilities(
+    messages: list[Message],
+    model: OrderingProbabilityModel | None = None,
+) -> list[PairwisePrecedenceProbability]:
+    probability_model = model or OrderingProbabilityModel()
+    probabilities: list[PairwisePrecedenceProbability] = []
+
+    for first_index, first in enumerate(messages):
+        for second in messages[first_index + 1:]:
+            probabilities.append(
+                PairwisePrecedenceProbability(
+                    first_message_id=first.message_id,
+                    second_message_id=second.message_id,
+                    probability_first_before_second=(
+                        probability_model.probability_before(first, second)
+                    ),
+                )
+            )
+
+    return probabilities
+
+
+#各ペアの先行確率から、確率が高い向きの有向エッジ候補を作る（A→B:10％の場合、B→A：90％　にする）
+def build_candidate_precedence_edges(
+    probabilities: list[PairwisePrecedenceProbability],
+) -> list[PrecedenceEdge]:
+    edges: list[PrecedenceEdge] = []
+
+    for probability in probabilities:
+        p_first_before_second = probability.probability_first_before_second
+        if p_first_before_second >= 0.5:
+            edges.append(
+                PrecedenceEdge(
+                    from_message_id=probability.first_message_id,
+                    to_message_id=probability.second_message_id,
+                    confidence=p_first_before_second,
+                )
+            )
+        else:
+            edges.append(
+                PrecedenceEdge(
+                    from_message_id=probability.second_message_id,
+                    to_message_id=probability.first_message_id,
+                    confidence=1.0 - p_first_before_second,
+                )
+            )
+
+    return edges
+
+
+def _has_path(edges: list[PrecedenceEdge], start_id: str, goal_id: str) -> bool:
+    adjacency: dict[str, list[str]] = {}
+    for edge in edges:
+        adjacency.setdefault(edge.from_message_id, []).append(edge.to_message_id)
+
+    stack = [start_id]
+    visited: set[str] = set()
+    while stack:
+        current_id = stack.pop()
+        if current_id == goal_id:
+            return True
+        if current_id in visited:
+            continue
+        visited.add(current_id)
+        stack.extend(adjacency.get(current_id, []))
+
+    return False
+
+
+#強いエッジから採用し、巡回する部分は、弱いエッジから外す
+def make_acyclic_precedence_edges(
+    edges: list[PrecedenceEdge],
+) -> tuple[list[PrecedenceEdge], list[PrecedenceEdge]]:
+    kept_edges: list[PrecedenceEdge] = []
+    removed_edges: list[PrecedenceEdge] = []
+
+    sorted_edges = sorted(
+        edges,
+        key=lambda edge: (
+            -edge.confidence,
+            edge.from_message_id,
+            edge.to_message_id,
+        ),
+    )
+    for edge in sorted_edges:
+        if _has_path(kept_edges, edge.to_message_id, edge.from_message_id):
+            removed_edges.append(edge)
+        else:
+            kept_edges.append(edge)
+
+    return kept_edges, removed_edges
+
+
+#サイクル（巡回）のないエッジ集合を使って、メッセージIDを前から順に並べる
+def topological_sort_message_ids(
+    message_ids: list[str],
+    edges: list[PrecedenceEdge],
+) -> list[str]:
+    original_index = {
+        message_id: index
+        for index, message_id in enumerate(message_ids)
+    }
+    adjacency = {message_id: [] for message_id in message_ids}
+    indegree = {message_id: 0 for message_id in message_ids}
+
+    for edge in edges:
+        if edge.from_message_id not in indegree or edge.to_message_id not in indegree:
+            continue
+        adjacency[edge.from_message_id].append(edge.to_message_id)
+        indegree[edge.to_message_id] += 1
+
+    ready = [
+        message_id
+        for message_id in message_ids
+        if indegree[message_id] == 0
+    ]
+    ordered_message_ids: list[str] = []
+
+    while ready:
+        ready.sort(key=lambda message_id: original_index[message_id])
+        current_id = ready.pop(0)
+        ordered_message_ids.append(current_id)
+
+        for next_id in adjacency[current_id]:
+            indegree[next_id] -= 1
+            if indegree[next_id] == 0:
+                ready.append(next_id)
+
+    if len(ordered_message_ids) != len(message_ids):
+        raise ValueError('precedence graph still has a cycle')
+
+    return ordered_message_ids
+
+
+#トポロジカルソートを作る入口。確率リストからエッジを作って、DAG化、最終的な順序を返す
+def build_topological_ordering(
+    messages: list[Message],
+    probabilities: list[PairwisePrecedenceProbability],
+) -> TopologicalOrdering:
+    candidate_edges = build_candidate_precedence_edges(probabilities)
+    kept_edges, removed_edges = make_acyclic_precedence_edges(candidate_edges)
+    ordered_message_ids = topological_sort_message_ids(
+        [message.message_id for message in messages],
+        kept_edges,
+    )
+
+    return TopologicalOrdering(
+        ordered_message_ids=ordered_message_ids,
+        kept_edges=kept_edges,
+        removed_edges=removed_edges,
+    )
 
 
 #複数のメッセージを並び替える＆バッチにする

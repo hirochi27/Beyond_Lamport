@@ -1,0 +1,12 @@
+サーバ起動
+uvicorn app.main:app --reload
+
+プローブの開始から、差分布の計算まで
+python app/experiment_runner.py --clients 5 --samples 100 --warmup 5 --interval 0.1
+
+メッセージの送信
+.venv/bin/python app/ticket_client.py \
+  --sequencer http://127.0.0.1:8000 \
+  --client-id client-a \
+  --title "timestamp check"
+
