@@ -59,11 +59,15 @@ class DemoClient:
         return last_response
 
     def build_ticket_create_message(self, title: str) -> dict:
+        true_created_time_ns = time.time_ns()
         return {
             "client_id": self.client_id,
             "client_timestamp_ns": self.now_ns(),
             "kind": "create_ticket",
-            "payload": {"title": title},
+            "payload": {
+                "title": title,
+                "true_created_time_ns": true_created_time_ns,
+            },
         }
 
     def send_request_message(self, title: str) -> dict:

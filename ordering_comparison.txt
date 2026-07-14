@@ -1,0 +1,32 @@
+Ordering comparison
+
+Clock offsets:
+client-0: 0 ms
+client-1: 50 ms
+client-2: -80 ms
+client-3: 130 ms
+client-4: -170 ms
+
+client_timestamp_order inversions_vs_true=6
+sequencer_estimated_order inversions_vs_true=0
+
+True creation order
+1. title=ticket-client-0-0 client=client-0 true_created_time_ns=1784042962626923312 true_created_time_ns=1784042962626923312 client_timestamp_ns=1784042962626926008 estimated_real_time_ns=1784042962627047121 message_id=1d37e306-a6d9-48b1-8904-157e224e6514
+2. title=ticket-client-1-0 client=client-1 true_created_time_ns=1784042962628345401 true_created_time_ns=1784042962628345401 client_timestamp_ns=1784042962678348194 estimated_real_time_ns=1784042962628546073 message_id=98a28657-c2c0-4356-92e4-d4aaa9d59370
+3. title=ticket-client-2-0 client=client-2 true_created_time_ns=1784042962629850108 true_created_time_ns=1784042962629850108 client_timestamp_ns=1784042962549852024 estimated_real_time_ns=1784042962630137791 message_id=0f06b63c-e7df-455d-90c8-127799ebc14e
+4. title=ticket-client-3-0 client=client-3 true_created_time_ns=1784042962633185336 true_created_time_ns=1784042962633185336 client_timestamp_ns=1784042962763187575 estimated_real_time_ns=1784042962633478699 message_id=602ee7a2-a5c7-4ee2-8dd3-3848a953009b
+5. title=ticket-client-4-0 client=client-4 true_created_time_ns=1784042962636367406 true_created_time_ns=1784042962636367406 client_timestamp_ns=1784042962466369263 estimated_real_time_ns=1784042962636589061 message_id=73dd046b-0b87-4048-ac7d-be445c181219
+
+Client timestamp order without sequencer correction
+1. title=ticket-client-4-0 client=client-4 client_timestamp_ns=1784042962466369263 true_created_time_ns=1784042962636367406 client_timestamp_ns=1784042962466369263 estimated_real_time_ns=1784042962636589061 message_id=73dd046b-0b87-4048-ac7d-be445c181219
+2. title=ticket-client-2-0 client=client-2 client_timestamp_ns=1784042962549852024 true_created_time_ns=1784042962629850108 client_timestamp_ns=1784042962549852024 estimated_real_time_ns=1784042962630137791 message_id=0f06b63c-e7df-455d-90c8-127799ebc14e
+3. title=ticket-client-0-0 client=client-0 client_timestamp_ns=1784042962626926008 true_created_time_ns=1784042962626923312 client_timestamp_ns=1784042962626926008 estimated_real_time_ns=1784042962627047121 message_id=1d37e306-a6d9-48b1-8904-157e224e6514
+4. title=ticket-client-1-0 client=client-1 client_timestamp_ns=1784042962678348194 true_created_time_ns=1784042962628345401 client_timestamp_ns=1784042962678348194 estimated_real_time_ns=1784042962628546073 message_id=98a28657-c2c0-4356-92e4-d4aaa9d59370
+5. title=ticket-client-3-0 client=client-3 client_timestamp_ns=1784042962763187575 true_created_time_ns=1784042962633185336 client_timestamp_ns=1784042962763187575 estimated_real_time_ns=1784042962633478699 message_id=602ee7a2-a5c7-4ee2-8dd3-3848a953009b
+
+Sequencer estimated order
+1. title=ticket-client-0-0 client=client-0 estimated_real_time_ns=1784042962627047121 true_created_time_ns=1784042962626923312 client_timestamp_ns=1784042962626926008 estimated_real_time_ns=1784042962627047121 message_id=1d37e306-a6d9-48b1-8904-157e224e6514
+2. title=ticket-client-1-0 client=client-1 estimated_real_time_ns=1784042962628546073 true_created_time_ns=1784042962628345401 client_timestamp_ns=1784042962678348194 estimated_real_time_ns=1784042962628546073 message_id=98a28657-c2c0-4356-92e4-d4aaa9d59370
+3. title=ticket-client-2-0 client=client-2 estimated_real_time_ns=1784042962630137791 true_created_time_ns=1784042962629850108 client_timestamp_ns=1784042962549852024 estimated_real_time_ns=1784042962630137791 message_id=0f06b63c-e7df-455d-90c8-127799ebc14e
+4. title=ticket-client-3-0 client=client-3 estimated_real_time_ns=1784042962633478699 true_created_time_ns=1784042962633185336 client_timestamp_ns=1784042962763187575 estimated_real_time_ns=1784042962633478699 message_id=602ee7a2-a5c7-4ee2-8dd3-3848a953009b
+5. title=ticket-client-4-0 client=client-4 estimated_real_time_ns=1784042962636589061 true_created_time_ns=1784042962636367406 client_timestamp_ns=1784042962466369263 estimated_real_time_ns=1784042962636589061 message_id=73dd046b-0b87-4048-ac7d-be445c181219

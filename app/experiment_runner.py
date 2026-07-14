@@ -12,6 +12,9 @@ from app.demo_client import DemoClient
 from app.probe_client import normalize_base_url, post_json
 
 
+DEFAULT_CLOCK_OFFSETS_MS = [0, 50, -80, 130, -170]
+
+
 def parse_args() -> Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument('--sequencer', default='http://127.0.0.1:8000')
@@ -21,6 +24,8 @@ def parse_args() -> Namespace:
     parser.add_argument('--interval', type=float, default=0.1)
     parser.add_argument('--sigma-multiplier', type=float, default=2.0)
     parser.add_argument('--messages-per-client', type=int, default=1)
+    parser.add_argument('--clock-offsets-ms', default=','.join(str(value) for value in DEFAULT_CLOCK_OFFSETS_MS))
+    parser.add_argument('--comparison-output', default='ordering_comparison.txt')
     return parser.parse_args()
 
 
@@ -134,11 +139,113 @@ def print_delta_distributions(freeze_response: dict) -> None:
             f'uncertainty={uncertainty_us:.3f}us'
         )
 
+
+def parse_clock_offsets_ns(clients: int, offsets_ms_text: str) -> list[int]:
+    offsets_ms = [
+        int(offset_ms.strip())
+        for offset_ms in offsets_ms_text.split(',')
+        if offset_ms.strip()
+    ]
+    if len(offsets_ms) < clients:
+        raise ValueError(
+            f'need at least {clients} clock offsets, got {len(offsets_ms)}'
+        )
+    return [offset_ms * 1_000_000 for offset_ms in offsets_ms[:clients]]
+
+
+def message_title(message: dict) -> str | None:
+    return message.get('payload', {}).get('title')
+
+
+def message_true_created_time_ns(message: dict) -> int:
+    return message['payload']['true_created_time_ns']
+
+
+def inversion_count(reference_messages: list[dict], ordered_messages: list[dict]) -> int:
+    reference_rank = {
+        message['message_id']: index
+        for index, message in enumerate(reference_messages)
+    }
+    ordered_ranks = [
+        reference_rank[message['message_id']]
+        for message in ordered_messages
+    ]
+    inversions = 0
+    for left_index, left_rank in enumerate(ordered_ranks):
+        for right_rank in ordered_ranks[left_index + 1:]:
+            if left_rank > right_rank:
+                inversions += 1
+    return inversions
+
+
+def format_order_section(name: str, messages: list[dict], key_name: str) -> list[str]:
+    lines = [name]
+    for index, message in enumerate(messages, start=1):
+        lines.append(
+            '{}. title={} client={} {}={} true_created_time_ns={} client_timestamp_ns={} estimated_real_time_ns={} message_id={}'.format(
+                index,
+                message_title(message),
+                message['client_id'],
+                key_name,
+                message.get(key_name) or message.get('payload', {}).get(key_name),
+                message_true_created_time_ns(message),
+                message['client_timestamp_ns'],
+                message.get('estimated_real_time_ns'),
+                message['message_id'],
+            )
+        )
+    return lines
+
+
+def build_ordering_comparison_report(messages: list[dict], clock_offsets_ns: list[int]) -> str:
+    true_order = sorted(messages, key=message_true_created_time_ns)
+    client_timestamp_order = sorted(messages, key=lambda message: message['client_timestamp_ns'])
+    sequencer_estimated_order = sorted(messages, key=lambda message: message['estimated_real_time_ns'])
+
+    lines = [
+        'Ordering comparison',
+        '',
+        'Clock offsets:',
+    ]
+    for index, offset_ns in enumerate(clock_offsets_ns):
+        lines.append(f'client-{index}: {offset_ns / 1_000_000:.0f} ms')
+
+    lines.extend([
+        '',
+        f'client_timestamp_order inversions_vs_true={inversion_count(true_order, client_timestamp_order)}',
+        f'sequencer_estimated_order inversions_vs_true={inversion_count(true_order, sequencer_estimated_order)}',
+        '',
+    ])
+    lines.extend(format_order_section('True creation order', true_order, 'true_created_time_ns'))
+    lines.append('')
+    lines.extend(format_order_section('Client timestamp order without sequencer correction', client_timestamp_order, 'client_timestamp_ns'))
+    lines.append('')
+    lines.extend(format_order_section('Sequencer estimated order', sequencer_estimated_order, 'estimated_real_time_ns'))
+    lines.append('')
+    return '\n'.join(lines)
+
+
+def write_ordering_comparison_report(output_path: Path, messages: list[dict], clock_offsets_ns: list[int]) -> None:
+    report = build_ordering_comparison_report(messages, clock_offsets_ns)
+    output_path.write_text(report)
+    print(f'Wrote ordering comparison to {output_path}')
+
 def main() -> None:
     args = parse_args()
     base_url = normalize_base_url(args.sequencer)
     print(json.dumps(start_experiment(base_url, args.clients, args.samples, args.sigma_multiplier), indent=2))
-    clients = [DemoClient(base_url, f'client-{client_index}') for client_index in range(args.clients)]
+    clock_offsets_ns = parse_clock_offsets_ns(args.clients, args.clock_offsets_ms)
+    clients = [
+        DemoClient(
+            base_url,
+            f'client-{client_index}',
+            clock_offset_ns=clock_offsets_ns[client_index],
+        )
+        for client_index in range(args.clients)
+    ]
+    print('Clock offsets:')
+    for client_index, offset_ns in enumerate(clock_offsets_ns):
+        print(f'client-{client_index}: {offset_ns / 1_000_000:.0f} ms')
 
     with ThreadPoolExecutor(max_workers=args.clients) as executor:
         futures = {
@@ -177,6 +284,11 @@ def main() -> None:
     estimated_response = estimate_request_message_times(base_url)
     print(json.dumps(estimated_response, indent=2, ensure_ascii=False))
     print_estimated_request_messages(estimated_response)
+    write_ordering_comparison_report(
+        Path(args.comparison_output),
+        estimated_response.get('request_messages', []),
+        clock_offsets_ns,
+    )
 
     precedence_response = calculate_precedence_probabilities(base_url)
     print(json.dumps(precedence_response, indent=2, ensure_ascii=False))

@@ -269,20 +269,20 @@ def clock_offset_distribution(client_id: str):
 
 
 
-# Codex 実験開始時に指定するクライアント数とprobe回数を受け取る型。
+# 実験開始時に指定するクライアント数とprobe回数を受け取る型。
 class ExperimentStartRequest(BaseModel):
     client_count: int
     samples_per_client: int
     sigma_multiplier: float = 2.0
 
 
-# Codex freeze済みの差分布dataclassをJSONへ変換する。
+# freeze済みの差分布dataclassをJSONへ変換する。
 def delta_distribution_response(distribution: ClockOffsetDeltaDistribution) -> dict:
     return asdict(distribution)
 
 
 def experiment_status() -> dict:
-    # Codex probe収集が完了してfreeze可能か、現在の実験状態を返す。
+    # probe収集が完了してfreeze可能か、現在の実験状態を返す。
     return dict(
         expected_client_count=clock_offsets.expected_client_count,
         samples_per_client=clock_offsets.samples_per_client,
@@ -297,7 +297,7 @@ def start_experiment(request: ExperimentStartRequest):
     global clock_offsets
     if request.client_count <= 0 or request.samples_per_client <= 0:
         raise HTTPException(status_code=400)
-    # Codex 新しい実験条件でprobe収集状態を初期化する。
+    # 新しい実験条件でprobe収集状態を初期化する。
     clock_offsets = ClockOffsetEstimator(
         sigma_multiplier=request.sigma_multiplier,
         expected_client_count=request.client_count,
@@ -317,7 +317,7 @@ def freeze_experiment():
         delta_distributions = clock_offsets.freeze_delta_distributions()
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    # Codex 全probeが揃った時点の差分布を一回だけ作り、保存済みを返す。
+    # 全probeが揃った時点の差分布を一回だけ作り、保存済みを返す。
     return dict(
         delta_distributions=[
             delta_distribution_response(distribution)
@@ -333,7 +333,7 @@ def clock_offset_delta_distributions():
         delta_distributions = clock_offsets.delta_distributions()
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    # Codex freeze済みの差分布だけを返し、ここでは再計算しない。
+    # freeze済みの差分布だけを返し、ここでは再計算しない。
     return dict(
         delta_distributions=[
             delta_distribution_response(distribution)
