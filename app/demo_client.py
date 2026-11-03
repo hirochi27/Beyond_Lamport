@@ -1,20 +1,43 @@
 import json
+import random
 import time
 from urllib import request
 
 
 class DemoClient:
-    def __init__(self, base_url: str, client_id: str, clock_offset_ns: int = 0):
+    def __init__(
+        self,
+        base_url: str,
+        client_id: str,
+        clock_offset_mean_ns: int = 0,
+        clock_jitter_stddev_ns: int = 0,
+        random_seed: int | None = None,
+    ):
         self.base_url = base_url.rstrip('/')
         self.client_id = client_id
-        self.clock_offset_ns = clock_offset_ns
+        self.clock_offset_mean_ns = clock_offset_mean_ns
+        self.clock_jitter_stddev_ns = clock_jitter_stddev_ns
+        self.random = random.Random(random_seed)
+
+    def sample_clock_offset_ns(self) -> int:
+        if self.clock_jitter_stddev_ns == 0:
+            return self.clock_offset_mean_ns
+        return round(
+            self.random.gauss(
+                self.clock_offset_mean_ns,
+                self.clock_jitter_stddev_ns,
+            )
+        )
 
     def now_ns(self) -> int:
-        return time.time_ns() + self.clock_offset_ns
+        return time.time_ns() + self.sample_clock_offset_ns()
+
+    def mean_offset_now_ns(self) -> int:
+        return time.time_ns() + self.clock_offset_mean_ns
 
     def get_json(self, path: str) -> dict:
-        with request.urlopen(f"{self.base_url}{path}", timeout=5) as response:
-            return json.loads(response.read().decode("utf-8"))
+        with request.urlopen(self.base_url + path, timeout=5) as response:
+            return json.loads(response.read().decode('utf-8'))
 
     def post_json(self, path: str, payload: dict) -> dict:
         body = json.dumps(payload).encode("utf-8")
@@ -31,9 +54,10 @@ class DemoClient:
         self.get_json("/api/clock-probe")
 
     def collect_probe(self) -> dict:
-        client_send_time_ns = self.now_ns()
-        probe = self.get_json("/api/clock-probe")
-        client_receive_time_ns = self.now_ns()
+        probe_offset_ns = self.sample_clock_offset_ns()
+        client_send_time_ns = time.time_ns() + probe_offset_ns
+        probe = self.get_json('/api/clock-probe')
+        client_receive_time_ns = time.time_ns() + probe_offset_ns
         sample = {
             "client_id": self.client_id,
             "client_send_time_ns": client_send_time_ns,
@@ -62,7 +86,7 @@ class DemoClient:
         true_created_time_ns = time.time_ns()
         return {
             "client_id": self.client_id,
-            "client_timestamp_ns": self.now_ns(),
+            "client_timestamp_ns": self.mean_offset_now_ns(),
             "kind": "create_ticket",
             "payload": {
                 "title": title,

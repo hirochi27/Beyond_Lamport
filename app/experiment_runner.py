@@ -9,10 +9,11 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.demo_client import DemoClient
-from app.probe_client import normalize_base_url, post_json
+from app.probe_client import get_json, normalize_base_url, post_json
 
 
 DEFAULT_CLOCK_OFFSETS_MS = [0, 50, -80, 130, -170]
+DEFAULT_CLOCK_JITTER_STDDEV_MS = 40
 
 
 def parse_args() -> Namespace:
@@ -25,6 +26,7 @@ def parse_args() -> Namespace:
     parser.add_argument('--sigma-multiplier', type=float, default=2.0)
     parser.add_argument('--messages-per-client', type=int, default=1)
     parser.add_argument('--clock-offsets-ms', default=','.join(str(value) for value in DEFAULT_CLOCK_OFFSETS_MS))
+    parser.add_argument('--clock-jitter-stddev-ms', type=float, default=DEFAULT_CLOCK_JITTER_STDDEV_MS)
     parser.add_argument('--comparison-output', default='ordering_comparison.txt')
     return parser.parse_args()
 
@@ -50,6 +52,10 @@ def run_client(client: DemoClient, samples: int, warmup: int, interval: float) -
 def freeze_experiment(base_url: str) -> dict:
     # Codex 全クライアントのprobe完了後に、差分布を一度だけ作らせる。
     return post_json(f'{base_url}/api/experiment/freeze', {})
+
+
+def get_clock_offset_distributions(base_url: str) -> dict:
+    return get_json(f'{base_url}/api/clock-offset-distributions')
 
 
 def send_request_message(client: DemoClient, title: str) -> dict:
@@ -136,7 +142,7 @@ def print_delta_distributions(freeze_response: dict) -> None:
             f'{from_client} -> {to_client}: '
             f'mean_delta={mean_us:.3f}us '
             f'stddev_delta={stddev_us:.3f}us '
-            f'uncertainty={uncertainty_us:.3f}us'
+            # f'uncertainty={uncertainty_us:.3f}us'
         )
 
 
@@ -197,7 +203,12 @@ def format_order_section(name: str, messages: list[dict], key_name: str) -> list
     return lines
 
 
-def build_ordering_comparison_report(messages: list[dict], clock_offsets_ns: list[int]) -> str:
+def build_ordering_comparison_report(
+    messages: list[dict],
+    clock_offsets_ns: list[int],
+    clock_jitter_stddev_ns: int,
+    learned_distributions: list[dict],
+) -> str:
     true_order = sorted(messages, key=message_true_created_time_ns)
     client_timestamp_order = sorted(messages, key=lambda message: message['client_timestamp_ns'])
     sequencer_estimated_order = sorted(messages, key=lambda message: message['estimated_real_time_ns'])
@@ -205,15 +216,32 @@ def build_ordering_comparison_report(messages: list[dict], clock_offsets_ns: lis
     lines = [
         'Ordering comparison',
         '',
-        'Clock offsets:',
+        '設定したオフセット分布:',
+        f'標準偏差={clock_jitter_stddev_ns / 1_000_000:.1f} ms',
     ]
     for index, offset_ns in enumerate(clock_offsets_ns):
-        lines.append(f'client-{index}: {offset_ns / 1_000_000:.0f} ms')
+        lines.append(f'client-{index}: 平均={offset_ns / 1_000_000:.0f} ms')
 
     lines.extend([
         '',
-        f'client_timestamp_order inversions_vs_true={inversion_count(true_order, client_timestamp_order)}',
-        f'sequencer_estimated_order inversions_vs_true={inversion_count(true_order, sequencer_estimated_order)}',
+        '学習したオフセット分布:',
+    ])
+    for distribution in sorted(learned_distributions, key=lambda item: item['client_id']):
+        learned_mean_ms = distribution['average_offset_seconds'] * 1_000
+        learned_stddev_ms = distribution['stddev_offset_seconds'] * 1_000
+#        learned_uncertainty_ms = distribution['uncertainty_seconds'] * 1_000
+        lines.append(
+            f"{distribution['client_id']}: "
+            f"平均={learned_mean_ms:.3f} ms "
+            f"標準偏差={learned_stddev_ms:.3f} ms "
+#            f"uncertainty={learned_uncertainty_ms:.3f} ms "
+            f"学習したサンプル数={distribution['accepted_sample_count']}/{distribution['sample_count']}"
+        )
+
+    lines.extend([
+        '',
+        #f'client_timestamp_order inversions_vs_true={inversion_count(true_order, client_timestamp_order)}',
+        f'並び替えミス数={inversion_count(true_order, sequencer_estimated_order)}',
         '',
     ])
     lines.extend(format_order_section('True creation order', true_order, 'true_created_time_ns'))
@@ -225,8 +253,19 @@ def build_ordering_comparison_report(messages: list[dict], clock_offsets_ns: lis
     return '\n'.join(lines)
 
 
-def write_ordering_comparison_report(output_path: Path, messages: list[dict], clock_offsets_ns: list[int]) -> None:
-    report = build_ordering_comparison_report(messages, clock_offsets_ns)
+def write_ordering_comparison_report(
+    output_path: Path,
+    messages: list[dict],
+    clock_offsets_ns: list[int],
+    clock_jitter_stddev_ns: int,
+    learned_distributions: list[dict],
+) -> None:
+    report = build_ordering_comparison_report(
+        messages,
+        clock_offsets_ns,
+        clock_jitter_stddev_ns,
+        learned_distributions,
+    )
     output_path.write_text(report)
     print(f'Wrote ordering comparison to {output_path}')
 
@@ -235,17 +274,21 @@ def main() -> None:
     base_url = normalize_base_url(args.sequencer)
     print(json.dumps(start_experiment(base_url, args.clients, args.samples, args.sigma_multiplier), indent=2))
     clock_offsets_ns = parse_clock_offsets_ns(args.clients, args.clock_offsets_ms)
+    clock_jitter_stddev_ns = round(args.clock_jitter_stddev_ms * 1_000_000)
     clients = [
         DemoClient(
             base_url,
             f'client-{client_index}',
-            clock_offset_ns=clock_offsets_ns[client_index],
+            clock_offset_mean_ns=clock_offsets_ns[client_index],
+            clock_jitter_stddev_ns=clock_jitter_stddev_ns,
+            random_seed=client_index,
         )
         for client_index in range(args.clients)
     ]
-    print('Clock offsets:')
+    print('Clock offset means:')
+    print(f'jitter stddev: {args.clock_jitter_stddev_ms:.1f} ms')
     for client_index, offset_ns in enumerate(clock_offsets_ns):
-        print(f'client-{client_index}: {offset_ns / 1_000_000:.0f} ms')
+        print(f'client-{client_index}: mean={offset_ns / 1_000_000:.0f} ms')
 
     with ThreadPoolExecutor(max_workers=args.clients) as executor:
         futures = {
@@ -266,6 +309,8 @@ def main() -> None:
     freeze_response = freeze_experiment(base_url)
     print(json.dumps(freeze_response, indent=2))
     print_delta_distributions(freeze_response)
+    learned_distributions_response = get_clock_offset_distributions(base_url)
+    learned_distributions = learned_distributions_response.get('distributions', [])
 
     with ThreadPoolExecutor(max_workers=args.clients * args.messages_per_client) as executor:
         futures = []
@@ -288,6 +333,8 @@ def main() -> None:
         Path(args.comparison_output),
         estimated_response.get('request_messages', []),
         clock_offsets_ns,
+        clock_jitter_stddev_ns,
+        learned_distributions,
     )
 
     precedence_response = calculate_precedence_probabilities(base_url)
