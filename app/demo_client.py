@@ -86,7 +86,7 @@ class DemoClient:
         true_created_time_ns = time.time_ns()
         return {
             "client_id": self.client_id,
-            "client_timestamp_ns": self.mean_offset_now_ns(),
+            "client_timestamp_ns": true_created_time_ns + self.sample_clock_offset_ns(),
             "kind": "create_ticket",
             "payload": {
                 "title": title,

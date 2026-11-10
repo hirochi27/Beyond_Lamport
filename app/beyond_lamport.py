@@ -7,6 +7,7 @@ from statistics import mean, median, stdev
 class NoisyTimestamp:
     client_id: str
     local_time: float
+    # Gaussian standard deviation (sigma), in the same units as local_time.
     uncertainty: float
 
     def earliest_likely_time(self) -> float:
@@ -356,49 +357,6 @@ def build_candidate_precedence_edges(
     return edges
 
 
-def _has_path(edges: list[PrecedenceEdge], start_id: str, goal_id: str) -> bool:
-    adjacency: dict[str, list[str]] = {}
-    for edge in edges:
-        adjacency.setdefault(edge.from_message_id, []).append(edge.to_message_id)
-
-    stack = [start_id]
-    visited: set[str] = set()
-    while stack:
-        current_id = stack.pop()
-        if current_id == goal_id:
-            return True
-        if current_id in visited:
-            continue
-        visited.add(current_id)
-        stack.extend(adjacency.get(current_id, []))
-
-    return False
-
-
-#強いエッジから採用し、巡回する部分は、弱いエッジから外す
-def make_acyclic_precedence_edges(
-    edges: list[PrecedenceEdge],
-) -> tuple[list[PrecedenceEdge], list[PrecedenceEdge]]:
-    kept_edges: list[PrecedenceEdge] = []
-    removed_edges: list[PrecedenceEdge] = []
-
-    sorted_edges = sorted(
-        edges,
-        key=lambda edge: (
-            -edge.confidence,
-            edge.from_message_id,
-            edge.to_message_id,
-        ),
-    )
-    for edge in sorted_edges:
-        if _has_path(kept_edges, edge.to_message_id, edge.from_message_id):
-            removed_edges.append(edge)
-        else:
-            kept_edges.append(edge)
-
-    return kept_edges, removed_edges
-
-
 #サイクル（巡回）のないエッジ集合を使って、メッセージIDを前から順に並べる
 def topological_sort_message_ids(
     message_ids: list[str],
@@ -435,52 +393,62 @@ def topological_sort_message_ids(
                 ready.append(next_id)
 
     if len(ordered_message_ids) != len(message_ids):
-        raise ValueError('precedence graph still has a cycle')
+        raise ValueError('precedence graph has a cycle; cyclic inputs are unsupported')
 
     return ordered_message_ids
 
 
-#トポロジカルソートを作る入口。確率リストからエッジを作って、DAG化、最終的な順序を返す
+# Paper section 3.4: select edges and sort without cycle repair.
 def build_topological_ordering(
     messages: list[Message],
     probabilities: list[PairwisePrecedenceProbability],
 ) -> TopologicalOrdering:
-    candidate_edges = build_candidate_precedence_edges(probabilities)
-    kept_edges, removed_edges = make_acyclic_precedence_edges(candidate_edges)
+    """Implement paper section 3.4 for a transitive precedence graph.
+
+    Keep the more likely direction for each pair and topologically sort all
+    selected edges. Do not remove edges to repair a cyclic input.
+    Equal probabilities retain input pair order as a deterministic tie rule;
+    the paper assumes no ties. This rule adds no confidence to a tied pair.
+    """
+    selected_edges = build_candidate_precedence_edges(probabilities)
     ordered_message_ids = topological_sort_message_ids(
         [message.message_id for message in messages],
-        kept_edges,
+        selected_edges,
     )
 
     return TopologicalOrdering(
         ordered_message_ids=ordered_message_ids,
-        kept_edges=kept_edges,
-        removed_edges=removed_edges,
+        kept_edges=selected_edges,
+        # Retained for response compatibility; this algorithm never removes edges.
+        removed_edges=[],
     )
 
 
 #複数のメッセージを並び替える＆バッチにする
 class FairSequencer:
     def __init__(self, model: OrderingProbabilityModel | None = None):
-        self.model = model or OrderingProbabilityModel()
+        self.model = model or OrderingProbabilityModel(confidence_threshold=0.75)
 
     def sequence(self, messages: list[Message]) -> list[list[Message]]:
-        remaining = sorted(messages, key=lambda message: message.timestamp.local_time)
-        batches: list[list[Message]] = []
+        probabilities = build_pairwise_precedence_probabilities(messages, self.model)
+        ordering = build_topological_ordering(messages, probabilities)
+        by_id = {message.message_id: message for message in messages}
+        return self.batch_ordered_messages([
+            by_id[message_id] for message_id in ordering.ordered_message_ids
+        ])
 
-        while remaining:
-            current = remaining.pop(0)
-            batch = [current]
-            next_remaining: list[Message] = []
+    def batch_ordered_messages(self, ordered_messages: list[Message]) -> list[list[Message]]:
+        """Split a linear order at adjacent probabilities strictly above threshold.
 
-            for candidate in remaining:
-                decision = self.model.compare(current, candidate)
-                if decision.confident:
-                    next_remaining.append(candidate)
-                else:
-                    batch.append(candidate)
+        Messages within a batch share a rank; their list order is only retained
+        for reproducible display, not a confident precedence decision.
+        """
+        if not ordered_messages:
+            return []
 
-            batches.append(batch)
-            remaining = next_remaining
-
+        batches = [[ordered_messages[0]]]
+        for previous, current in zip(ordered_messages, ordered_messages[1:]):
+            if self.model.probability_before(previous, current) > self.model.confidence_threshold:
+                batches.append([])
+            batches[-1].append(current)
         return batches

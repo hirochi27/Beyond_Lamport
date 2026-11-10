@@ -10,6 +10,7 @@ from app.beyond_lamport import (
     ClockOffsetDeltaDistribution,
     ClockOffsetEstimator,
     ClockProbeSample,
+    FairSequencer,
     Message,
     NoisyTimestamp,
     PairwisePrecedenceProbability,
@@ -92,14 +93,32 @@ def precedence_edge_response(edge: PrecedenceEdge) -> dict:
     return asdict(edge)
 
 
-def topological_ordering_response(ordering: TopologicalOrdering) -> dict:
+def topological_ordering_response(
+    ordering: TopologicalOrdering,
+    ordering_messages: list[Message],
+) -> dict:
     ordered_messages = [
         message
         for message_id in ordering.ordered_message_ids
         for message in request_messages
         if message['message_id'] == message_id
     ]
+    by_id = {message.message_id: message for message in ordering_messages}
+    stored_by_id = {message['message_id']: message for message in ordered_messages}
+    sequencer = FairSequencer()
+    batches = sequencer.batch_ordered_messages([
+        by_id[message_id] for message_id in ordering.ordered_message_ids
+    ])
     return {
+        'batch_threshold': sequencer.model.confidence_threshold,
+        'batches': [
+            {
+                'rank': rank,
+                'message_ids': [message.message_id for message in batch],
+                'messages': [stored_by_id[message.message_id] for message in batch],
+            }
+            for rank, batch in enumerate(batches)
+        ],
         'ordered_message_ids': ordering.ordered_message_ids,
         'ordered_messages': ordered_messages,
         'kept_edges': [
@@ -123,13 +142,15 @@ def message_to_ordering_message(message: dict) -> Message:
         message['average_offset_seconds'] = distribution.average_offset_seconds
 
     message['uncertainty_ns'] = int(distribution.uncertainty_seconds * 1_000_000_000)
+    # Keep the interval width separate from sigma used by the Gaussian CDF.
+    message['stddev_ns'] = distribution.stddev_offset_seconds * 1_000_000_000
 
     return Message(
         message_id=message['message_id'],
         timestamp=NoisyTimestamp(
             client_id=message['client_id'],
             local_time=message['estimated_real_time_ns'],
-            uncertainty=message['uncertainty_ns'],
+            uncertainty=message['stddev_ns'],
         ),
         payload=message.get('kind'),
     )
@@ -208,9 +229,13 @@ def calculate_and_store_topological_order():
         precedence_probability_response(probability)
         for probability in probabilities
     ]
-    topological_ordering = topological_ordering_response(
-        build_topological_ordering(ordering_messages, probabilities)
-    )
+    try:
+        topological_ordering = topological_ordering_response(
+            build_topological_ordering(ordering_messages, probabilities),
+            ordering_messages,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     request_messages[:] = topological_ordering['ordered_messages']
     return topological_ordering
 

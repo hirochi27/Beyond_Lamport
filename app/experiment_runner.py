@@ -103,7 +103,7 @@ def print_precedence_probabilities(response: dict) -> None:
 
 def print_topological_order(response: dict) -> None:
     print()
-    print('Topological message order:')
+    print('Candidate linear order (messages in the same batch share a rank):')
     for index, message in enumerate(response.get('ordered_messages', []), start=1):
         title = message.get('payload', {}).get('title')
         print(
@@ -115,6 +115,10 @@ def print_topological_order(response: dict) -> None:
                 title,
             )
         )
+    print()
+    print('Fair ordering batches (threshold={}):'.format(response['batch_threshold']))
+    for batch in response['batches']:
+        print('rank={}: {}'.format(batch['rank'], ', '.join(batch['message_ids'])))
     removed_edges = response.get('removed_edges', [])
     if removed_edges:
         print('Removed cycle edges:')
