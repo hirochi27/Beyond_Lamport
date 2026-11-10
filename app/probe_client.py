@@ -50,21 +50,24 @@ def collect_warmup_probe(base_url: str) -> None:
 
 
 #シーケンサとクライアントのタイムスタンプを合体
-def collect_probe(base_url: str, client_id: str) -> dict:
+def capture_probe_sample(base_url: str, client_id: str) -> dict:
     #送信時刻をのせて、probeを送る
     client_send_time_ns = time.time_ns()
     probe = get_json(f"{base_url}/api/clock-probe")
     #受け取った時間を記録
     client_receive_time_ns = time.time_ns()
     #辞書（sample）にまとめる
-    sample = {
+    return {
         "client_id": client_id,
         "client_send_time_ns": client_send_time_ns,
         "sequencer_receive_time_ns": probe["sequencer_receive_time_ns"],
         "sequencer_send_time_ns": probe["sequencer_send_time_ns"],
         "client_receive_time_ns": client_receive_time_ns,
     }
-    #できたoffsetをシーケンサに送信
+
+
+def collect_probe(base_url: str, client_id: str) -> dict:
+    sample = capture_probe_sample(base_url, client_id)
     return post_json(f"{base_url}/api/clock-offset-samples", sample)
 
 
