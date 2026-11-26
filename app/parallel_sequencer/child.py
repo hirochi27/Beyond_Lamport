@@ -4,12 +4,21 @@
 import argparse
 import json
 import time
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict
 from math import isfinite
 
 from .. import probe_client
-from ..beyond_lamport import ClockOffsetDistribution, ClockOffsetEstimator, ClockProbeSample
-from .models import ParentUserOffsetDistribution
+from ..beyond_lamport import (
+    ClockOffsetDistribution,
+    ClockOffsetEstimator,
+    ClockProbeSample,
+    Message,
+    NoisyTimestamp,
+    build_pairwise_precedence_probabilities,
+    build_topological_ordering,
+)
+from .models import ChildRequest, OrderedRequestForParent, ParentUserOffsetDistribution
 
 
 def measure_parent_clock_offset(
@@ -58,6 +67,56 @@ def compose_parent_user_offset(
             parent_child.stddev_offset_seconds**2 + child_user.stddev_offset_seconds**2
         ),
     )
+
+
+########子の担当分のリクエストを並び替え、親に渡すためのリストにする########
+def order_child_requests(
+    requests: Sequence[ChildRequest],
+    parent_child: ClockOffsetDistribution,
+    child_user_offsets: Mapping[str, ClockOffsetDistribution],
+) -> list[OrderedRequestForParent]:
+    """Order requests in the child clock and attach parent-clock offsets."""
+    requests_by_id: dict[str, ChildRequest] = {}
+    used_offsets: dict[str, ClockOffsetDistribution] = {}
+    messages: list[Message] = []
+    for request in requests:
+        if request.message_id in requests_by_id:
+            raise ValueError(f"duplicate request ID: {request.message_id}")
+
+        distribution = child_user_offsets.get(request.client_id)
+        if distribution is None:
+            raise ValueError(f"no child-user offset for user: {request.client_id}")
+        if distribution.client_id != request.client_id:
+            raise ValueError(f"child-user offset belongs to a different user: {request.client_id}")
+
+        requests_by_id[request.message_id] = request
+        used_offsets[request.client_id] = distribution
+        # Match the sequential API's nanosecond conversion for means and sigmas.
+        offset_ns = int(distribution.average_offset_seconds * 1_000_000_000)
+        messages.append(Message(
+            message_id=request.message_id,
+            timestamp=NoisyTimestamp(
+                client_id=request.client_id,
+                local_time=request.client_timestamp_ns + offset_ns,
+                uncertainty=distribution.stddev_offset_seconds * 1_000_000_000,
+            ),
+        ))
+
+    probabilities = build_pairwise_precedence_probabilities(messages)
+    ordering = build_topological_ordering(messages, probabilities)
+    parent_user_offsets = {
+        client_id: compose_parent_user_offset(parent_child, distribution)
+        for client_id, distribution in used_offsets.items()
+    }
+    ordered_requests = [requests_by_id[message_id] for message_id in ordering.ordered_message_ids]
+    return [
+        OrderedRequestForParent(
+            message_id=request.message_id,
+            client_timestamp_ns=request.client_timestamp_ns,
+            parent_user_offset=parent_user_offsets[request.client_id],
+        )
+        for request in ordered_requests
+    ]
 
 
 def main() -> None:
